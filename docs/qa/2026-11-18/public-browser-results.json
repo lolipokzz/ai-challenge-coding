@@ -1,0 +1,38 @@
+[
+  {
+    "width": 1440,
+    "status": "passed",
+    "checks": [
+      "login",
+      "next week",
+      "grades",
+      "request lifecycle",
+      "persistence",
+      "notifications with deadline",
+      "profile",
+      "Escape",
+      "second account isolation",
+      "no page errors",
+      "no horizontal overflow"
+    ],
+    "timezone": "America/Los_Angeles"
+  },
+  {
+    "width": 360,
+    "status": "passed",
+    "checks": [
+      "login",
+      "next week",
+      "grades",
+      "request lifecycle",
+      "persistence",
+      "notifications with deadline",
+      "profile",
+      "Escape",
+      "second account isolation",
+      "no page errors",
+      "no horizontal overflow"
+    ],
+    "timezone": "America/Los_Angeles"
+  }
+]
