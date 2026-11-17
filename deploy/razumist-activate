@@ -1,0 +1,29 @@
+#!/bin/bash
+set -euo pipefail
+[[ $# -eq 1 && $1 =~ ^[0-9a-f]{40}$ ]] || exit 2
+revision=$1
+base=/srv/razumist
+release="$base/releases/$revision"
+[[ -d "$release" && ! -L "$release" && -x "$release/razumist" ]] || exit 3
+previous=$(readlink "$base/current" || true)
+/usr/local/sbin/razumist-backup
+ln -s "$release" "$base/.current-next"
+mv -Tf "$base/.current-next" "$base/current"
+systemctl restart razumist.service || true
+for attempt in $(seq 1 30); do
+  if [[ $(curl -fsS --max-time 2 http://127.0.0.1:8000/version.txt || true) == "$revision" ]] && [[ $(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8000/api/me || true) == 401 ]]; then
+    echo "Deployed $revision"
+    exit 0
+  fi
+  sleep 1
+done
+echo 'Health check failed; restoring previous release' >&2
+if [[ -n "$previous" ]]; then
+  ln -s "$previous" "$base/.current-rollback"
+  mv -Tf "$base/.current-rollback" "$base/current"
+  systemctl restart razumist.service
+else
+  systemctl stop razumist.service
+  rm -- "$base/current"
+fi
+exit 1

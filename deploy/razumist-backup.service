@@ -1,0 +1,5 @@
+[Unit]
+Description=Backup Razumist SQLite database
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/razumist-backup

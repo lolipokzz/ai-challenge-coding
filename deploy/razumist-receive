@@ -1,0 +1,37 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+if [[ ! ${SSH_ORIGINAL_COMMAND:-} =~ ^deploy\ ([0-9a-f]{40})$ ]]; then
+  echo 'Only deploy <commit SHA> is allowed' >&2; exit 2
+fi
+revision=${BASH_REMATCH[1]}
+base=/srv/razumist/releases
+exec 9>/srv/razumist/deploy.lock
+flock -w 300 9
+stage=$(mktemp -d "$base/.upload.XXXXXXXX")
+trap 'rm -rf -- "$stage"' EXIT
+# Limit compressed and extracted sizes, reject links and paths outside the release.
+python3 -c '
+import sys, tarfile, pathlib, os
+root=pathlib.Path(sys.argv[1]); revision=sys.argv[2]
+archive=root/"upload.tar.gz"
+with archive.open("wb") as f:
+    total=0
+    while chunk:=sys.stdin.buffer.read(65536):
+        total+=len(chunk)
+        if total>64*1024*1024: raise SystemExit("Archive too large")
+        f.write(chunk)
+with tarfile.open(archive,"r:gz") as t:
+    members=t.getmembers()
+    if len(members)>10000 or sum(m.size for m in members)>200*1024*1024: raise SystemExit("Release too large")
+    for m in members:
+        p=pathlib.PurePosixPath(m.name)
+        if p.is_absolute() or ".." in p.parts or not p.parts or p.parts[0] not in ("razumist","dist") or not (m.isfile() or m.isdir()): raise SystemExit("Unsafe archive entry")
+    t.extractall(root,filter="data")
+archive.unlink()
+if not (root/"razumist").is_file() or not (root/"dist/index.html").is_file(): raise SystemExit("Incomplete release")
+if (root/"dist/version.txt").read_text().strip()!=revision: raise SystemExit("Revision mismatch")
+for p in [root,*root.rglob("*")]: os.chmod(p,0o755 if p.is_dir() or p==root/"razumist" else 0o644)
+' "$stage" "$revision"
+if [[ ! -e "$base/$revision" ]]; then mv -- "$stage" "$base/$revision"; fi
+sudo /usr/local/sbin/razumist-activate "$revision"

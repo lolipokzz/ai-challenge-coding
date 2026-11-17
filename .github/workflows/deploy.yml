@@ -1,0 +1,68 @@
+name: Test, build and deploy Razumist
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: razumist-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify-and-deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: stable
+          cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install locked frontend dependencies
+        run: |
+          npm install --global pnpm@10.11.0
+          pnpm install --frozen-lockfile
+      - name: Test backend and validate deployment scripts
+        run: |
+          python3 -m unittest discover -s tests -v
+          go vet ./...
+          bash -n deploy/razumist-receive deploy/razumist-activate deploy/razumist-backup
+      - name: Build Linux release
+        run: |
+          pnpm run build
+          mkdir -p release
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o release/razumist .
+          cp -R dist release/dist
+          printf '%s\n' "$GITHUB_SHA" > release/dist/version.txt
+          tar -czf release.tar.gz -C release razumist dist
+      - name: Deploy verified main revision
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          trap 'rm -f "$HOME/.ssh/razumist_key"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/razumist_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          ssh -i "$HOME/.ssh/razumist_key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes -o ConnectTimeout=15 razumist-deploy@176.98.179.224 \
+            "deploy $GITHUB_SHA" < release.tar.gz
+          for attempt in $(seq 1 12); do
+            if [ "$(curl --fail --silent --show-error --max-time 10 https://176.98.179.224/version.txt)" = "$GITHUB_SHA" ]; then
+              echo "Verified HTTPS deployment: $GITHUB_SHA"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Public HTTPS verification failed' >&2
+          exit 1

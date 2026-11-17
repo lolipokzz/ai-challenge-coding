@@ -1,0 +1,23 @@
+[Unit]
+Description=Razumist student portal
+After=network.target
+[Service]
+User=razumist
+Group=razumist
+WorkingDirectory=/srv/razumist/current
+ExecStart=/srv/razumist/current/razumist --host 127.0.0.1 --port 8000 --db /var/lib/razumist/razumist.sqlite3 --static /srv/razumist/current/dist --public-origin https://176.98.179.224
+Restart=on-failure
+RestartSec=3
+StateDirectory=razumist
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+[Install]
+WantedBy=multi-user.target

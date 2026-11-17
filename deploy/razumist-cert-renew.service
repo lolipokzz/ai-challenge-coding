@@ -1,0 +1,5 @@
+[Unit]
+Description=Renew Razumist short-lived IP certificate
+[Service]
+Type=oneshot
+ExecStart=/opt/razumist-certbot/bin/certbot renew --quiet --deploy-hook /usr/local/sbin/razumist-reload-nginx
