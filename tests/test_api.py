@@ -1,4 +1,5 @@
 """Интеграционные проверки реального HTTP API с изолированной SQLite БД."""
+import datetime
 import http.cookiejar
 import json
 import os
@@ -73,8 +74,8 @@ class APITest(unittest.TestCase):
         cls.start_server()
 
     @classmethod
-    def start_server(cls):
-        cls.process = subprocess.Popen([cls.binary, '--host', '127.0.0.1', '--port', str(cls.port), '--db', str(cls.db)], cwd=str(ROOT), stdout=cls.log, stderr=cls.log)
+    def start_server(cls, extra_args=None):
+        cls.process = subprocess.Popen([cls.binary, '--host', '127.0.0.1', '--port', str(cls.port), '--db', str(cls.db)] + (extra_args or []), cwd=str(ROOT), stdout=cls.log, stderr=cls.log)
         for _ in range(100):
             if cls.process.poll() is not None:
                 cls.log.seek(0)
@@ -218,6 +219,93 @@ class APITest(unittest.TestCase):
         self.assertEqual(statuses[:10], [401] * 10)
         self.assertEqual(statuses[10:], [429, 429])
         self.assertNotIn(200, statuses)
+
+    def test_schedule_week_validation_and_normalization(self):
+        weeks = []
+        for requested, monday in [('2026-11-18', '2026-11-16'), ('2026-11-29', '2026-11-23')]:
+            status, body, _ = self.alina.call('/api/schedule?week=' + requested)
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body['weekStart'], monday)
+            self.assertEqual(body['timeZone'], 'Europe/Moscow')
+            self.assertEqual(len(body['items']), 15)
+            self.assertEqual(min(x['date'] for x in body['items']), monday)
+            weeks.append(body['items'])
+        self.assertFalse(set(x['id'] for x in weeks[0]) & set(x['id'] for x in weeks[1]))
+        for invalid in ['2026-02-30', 'tomorrow', '1999-01-01', '2101-01-01']:
+            self.assertEqual(self.alina.call('/api/schedule?week=' + invalid)[0], 400)
+        dashboard = self.alina.call('/api/dashboard')[1]
+        self.assertEqual(len(dashboard['schedule']), 30)
+        dates = sorted(set(x['date'] for x in dashboard['schedule']))
+        self.assertEqual((datetime.date.fromisoformat(dates[-1]) - datetime.date.fromisoformat(dates[0])).days, 11)
+
+    def test_demo_request_lifecycle_and_notification(self):
+        item = self.create_request()
+        path = '/api/requests/%s/demo-advance' % item['id']
+        self.assertEqual(self.mark.call(path, 'POST', {})[0], 404)
+        self.assertEqual(self.alina.call(path, 'POST', {}, csrf=False)[0], 403)
+        for expected in ['processing', 'ready']:
+            status, body, _ = self.alina.call(path, 'POST', {})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body['item']['status'], expected)
+        self.assertEqual([h['status'] for h in body['item']['history']], ['submitted', 'processing', 'ready'])
+        self.assertEqual(self.alina.call(path, 'POST', {})[0], 409)
+        self.assertEqual(self.alina.call('/api/requests/%s/cancel' % item['id'], 'POST', {})[0], 409)
+        mine = self.alina.call('/api/notifications')[1]['items']
+        self.assertEqual(len([n for n in mine if n.get('requestId') == item['id']]), 1)
+        theirs = self.mark.call('/api/notifications')[1]['items']
+        self.assertFalse(any(n.get('requestId') == item['id'] for n in theirs))
+        cancelled = self.create_request()
+        self.alina.call('/api/requests/%s/cancel' % cancelled['id'], 'POST', {})
+        self.assertEqual(self.alina.call('/api/requests/%s/demo-advance' % cancelled['id'], 'POST', {})[0], 409)
+        self.stop_server()
+        self.start_server()
+        self.alina.login()
+        saved = self.alina.call('/api/requests/%s' % item['id'])[1]['item']
+        self.assertEqual(saved['status'], 'ready')
+        self.assertEqual(len(saved['history']), 3)
+
+    def test_news_deadline_migration_preserves_read_state(self):
+        items = self.alina.call('/api/notifications')[1]['items']
+        deadline = next(n for n in items if n.get('dueDate'))
+        datetime.date.fromisoformat(deadline['dueDate'])
+        self.assertEqual(deadline['requestType'], 'Заявление на материальную помощь')
+        self.assertTrue(any(n['category'] == 'news' for n in items))
+        self.alina.call('/api/notifications/%s/read' % deadline['id'], 'POST', {})
+        self.stop_server()
+        self.start_server()
+        self.alina.login()
+        saved = self.alina.call('/api/notifications')[1]['items']
+        self.assertEqual(len(saved), len(items))
+        self.assertTrue(next(n for n in saved if n['id'] == deadline['id'])['read'])
+
+    def test_public_origin_secure_cookie_and_csrf(self):
+        self.stop_server()
+        self.start_server(['--public-origin', 'https://razumist.example'])
+        client = Client(self.base)
+        try:
+            credentials = {'login': 'alina', 'password': 'Campus2026!'}
+            self.assertEqual(client.call('/api/login', 'POST', credentials)[0], 403)
+            self.assertEqual(client.call('/api/login', 'POST', credentials, origin='https://attacker.example')[0], 403)
+            status, body, headers = client.call('/api/login', 'POST', credentials, origin='https://razumist.example')
+            self.assertEqual(status, 200, body)
+            self.assertIn('secure', headers.get('Set-Cookie', '').lower())
+            # Simulate the trusted TLS terminator forwarding an authenticated request.
+            cookie = headers['Set-Cookie'].split(';')[0]
+            for origin, expected in [('https://attacker.example', 403), ('https://razumist.example', 200)]:
+                req = urllib.request.Request(self.base + '/api/logout', data=b'{}', method='POST', headers={
+                    'Origin': origin, 'Content-Type': 'application/json', 'Cookie': cookie,
+                    'X-CSRF-Token': body['csrfToken'], 'X-Forwarded-Proto': 'http'})
+                try:
+                    response = urllib.request.urlopen(req, timeout=5)
+                except urllib.error.HTTPError as exc:
+                    response = exc
+                self.assertEqual(response.status, expected)
+                if expected == 200:
+                    self.assertIn('secure', response.headers.get('Set-Cookie', '').lower())
+                response.close()
+        finally:
+            self.stop_server()
+            self.start_server()
 
     def test_z_persistence_after_restart(self):
         item = self.create_request()

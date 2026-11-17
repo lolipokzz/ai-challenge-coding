@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,6 +33,8 @@ type app struct {
 	mu           sync.Mutex
 	attempts     map[string][]time.Time
 	loopbackOnly bool
+	publicOrigin string
+	recordMu     sync.Mutex
 }
 type session struct {
 	hash    string
@@ -148,15 +151,20 @@ func (a *app) current(r *http.Request) (session, error) {
 	s.profile = decode(raw)
 	return s, e
 }
-func sameOrigin(r *http.Request) bool {
+func (a *app) secureCookie(r *http.Request) bool { return a.publicOrigin != "" || r.TLS != nil }
+func (a *app) sameOrigin(r *http.Request) bool {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	return r.Header.Get("Sec-Fetch-Site") != "cross-site" && (r.Header.Get("Origin") == "" || r.Header.Get("Origin") == scheme+"://"+r.Host)
+	expected := scheme + "://" + r.Host
+	if a.publicOrigin != "" {
+		expected = a.publicOrigin
+	}
+	return r.Header.Get("Sec-Fetch-Site") != "cross-site" && (r.Header.Get("Origin") == "" || r.Header.Get("Origin") == expected)
 }
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if a.loopbackOnly {
+	if a.loopbackOnly && a.publicOrigin == "" {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
@@ -188,7 +196,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, 405, "Метод не поддерживается")
 		return
 	}
-	if r.Method == "POST" && (!sameOrigin(r) || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(s.csrf)) != 1) {
+	if r.Method == "POST" && (!a.sameOrigin(r) || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(s.csrf)) != 1) {
 		fail(w, 403, "Проверка безопасности не пройдена. Обновите страницу.")
 		return
 	}
@@ -201,12 +209,22 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.internal(w, e)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "session", Value: "", Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "", Path: "/", HttpOnly: true, Secure: a.secureCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: -1})
 		respond(w, 200, object{"ok": true})
 	case path == "/api/schedule" && r.Method == "GET":
-		respond(w, 200, object{"items": schedule(s.uid)})
+		week := time.Now().In(moscow)
+		if raw := r.URL.Query().Get("week"); raw != "" {
+			var err error
+			week, err = time.ParseInLocation("2006-01-02", raw, moscow)
+			if err != nil || week.Year() < 2000 || week.Year() > 2100 {
+				fail(w, 400, "Неделя должна быть датой ГГГГ-ММ-ДД с 2000 по 2100 год")
+				return
+			}
+		}
+		respond(w, 200, object{"items": scheduleWeek(s.uid, week), "weekStart": weekMonday(week).Format("2006-01-02"), "timeZone": "Europe/Moscow"})
 	case path == "/api/dashboard" && r.Method == "GET":
-		out := object{"schedule": schedule(s.uid)}
+		now := time.Now().In(moscow)
+		out := object{"schedule": append(scheduleWeek(s.uid, now), scheduleWeek(s.uid, now.AddDate(0, 0, 7))...), "timeZone": "Europe/Moscow"}
 		for _, k := range []string{"grades", "requests", "notifications"} {
 			items, err := a.list(s.uid, k)
 			if err != nil {
@@ -266,6 +284,9 @@ func (a *app) recordRoute(w http.ResponseWriter, r *http.Request, s session) {
 		fail(w, 404, "Раздел не найден")
 		return
 	}
+	// Serialize transitions so concurrent demo/cancel calls cannot overwrite history.
+	a.recordMu.Lock()
+	defer a.recordMu.Unlock()
 	p, e := a.item(s.uid, id, kind)
 	if errors.Is(e, sql.ErrNoRows) {
 		fail(w, 404, "Запись не найдена")
@@ -296,6 +317,45 @@ func (a *app) recordRoute(w http.ResponseWriter, r *http.Request, s session) {
 		respond(w, 200, object{"item": p})
 		return
 	}
+	if kind == "requests" && len(parts) == 4 && parts[3] == "demo-advance" && r.Method == "POST" {
+		next, note := "", ""
+		switch p["status"] {
+		case "submitted":
+			next, note = "processing", "Демонстрация: заявка принята в обработку. Реальный сотрудник не подключён."
+		case "processing":
+			next, note = "ready", "Демонстрация: обработка завершена. Реальный документ не выдаётся."
+		default:
+			fail(w, 409, "Демонстрационная обработка этой заявки завершена или отменена")
+			return
+		}
+		date := stamp()
+		p["status"], p["updatedAt"] = next, date
+		history, _ := p["history"].([]any)
+		p["history"] = append(history, object{"status": next, "date": date, "note": note})
+		tx, err := a.db.Begin()
+		if err != nil {
+			a.internal(w, err)
+			return
+		}
+		defer tx.Rollback()
+		if _, err = tx.Exec("UPDATE records SET payload=? WHERE id=? AND user_id=? AND kind='requests'", encode(p), id, s.uid); err != nil {
+			a.internal(w, err)
+			return
+		}
+		if next == "ready" {
+			notification := object{"title": "Демонстрационная заявка готова", "body": fmt.Sprint(p["type"]) + ": демонстрация обработки завершена. Реальный документ не выдаётся.", "category": "requests", "action": "requests", "actionLabel": "Открыть заявку", "requestId": id, "createdAt": date, "read": false}
+			if _, err = tx.Exec("INSERT INTO records(user_id,kind,payload) VALUES(?,'notifications',?)", s.uid, encode(notification)); err != nil {
+				a.internal(w, err)
+				return
+			}
+		}
+		if err = tx.Commit(); err != nil {
+			a.internal(w, err)
+			return
+		}
+		respond(w, 200, object{"item": p})
+		return
+	}
 	if kind == "notifications" && len(parts) == 4 && parts[3] == "read" && r.Method == "POST" {
 		p["read"] = true
 		if e = a.save(s.uid, id, p); e != nil {
@@ -308,7 +368,7 @@ func (a *app) recordRoute(w http.ResponseWriter, r *http.Request, s session) {
 	fail(w, 404, "Раздел не найден")
 }
 func (a *app) login(w http.ResponseWriter, r *http.Request) {
-	if !sameOrigin(r) {
+	if !a.sameOrigin(r) {
 		fail(w, 403, "Вход с другого сайта запрещён")
 		return
 	}
@@ -384,7 +444,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		a.internal(w, e)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "session", Value: tok, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: 28800})
+	http.SetCookie(w, &http.Cookie{Name: "session", Value: tok, Path: "/", HttpOnly: true, Secure: a.secureCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: 28800})
 	respond(w, 200, object{"user": decode(raw), "csrfToken": csrf})
 }
 func (a *app) staticFile(w http.ResponseWriter, r *http.Request) {
@@ -424,11 +484,15 @@ func subjects(uid int) []string {
 
 var teachers = []string{"Ирина Светлова", "Павел Речной", "Вера Облачная", "Артём Полянов"}
 
-func schedule(uid int) []object {
-	loc := time.FixedZone("MSK", 3*3600)
-	today := time.Now().In(loc)
-	day := (int(today.Weekday()) + 6) % 7
-	monday := today.AddDate(0, 0, -day)
+var moscow = time.FixedZone("MSK", 3*3600)
+
+func weekMonday(date time.Time) time.Time {
+	date = date.In(moscow)
+	date = time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, moscow)
+	return date.AddDate(0, 0, -(int(date.Weekday())+6)%7)
+}
+func scheduleWeek(uid int, date time.Time) []object {
+	monday := weekMonday(date)
 	out := []object{}
 	s := subjects(uid)
 	for d := 0; d < 5; d++ {
@@ -447,7 +511,7 @@ func schedule(uid int) []object {
 				}
 				note = "Аудитория изменена: " + room
 			}
-			out = append(out, object{"id": uid*100 + d*3 + slot, "date": monday.AddDate(0, 0, d).Format("2006-01-02"), "start": t[0], "end": t[1], "subject": s[i], "type": []string{"Лекция", "Практика", "Семинар"}[slot], "room": room, "teacher": teachers[i], "changed": changed, "changeNote": note})
+			out = append(out, object{"id": fmt.Sprintf("%d-%s-%d", uid, monday.Format("2006-01-02"), d*3+slot), "date": monday.AddDate(0, 0, d).Format("2006-01-02"), "start": t[0], "end": t[1], "subject": s[i], "type": []string{"Лекция", "Практика", "Семинар"}[slot], "room": room, "teacher": teachers[i], "changed": changed, "changeNote": note})
 		}
 	}
 	return out
@@ -466,7 +530,7 @@ func (a *app) initialize() error {
 		return e
 	}
 	if count > 0 {
-		return nil
+		return a.migrateDemoContent()
 	}
 	for uid := 1; uid <= 2; uid++ {
 		login, name, group, program, faculty, year := "alina", "Алина Ветрова", "ИС-23-1", "Информационные системы и технологии", "Цифровых технологий", 3
@@ -518,14 +582,66 @@ func (a *app) initialize() error {
 			}
 		}
 	}
-	return nil
+	return a.migrateDemoContent()
+}
+
+// Add content once to existing demo databases without replacing user records or read flags.
+func (a *app) migrateDemoContent() error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY)"); err != nil {
+		return err
+	}
+	var count int
+	if err = tx.QueryRow("SELECT COUNT(*) FROM migrations WHERE name='demo-news-deadlines-v1'").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return tx.Commit()
+	}
+	now := time.Now().In(moscow)
+	due := now.AddDate(0, 0, 7).Format("2006-01-02")
+	for uid := 1; uid <= 2; uid++ {
+		for _, n := range []object{
+			{"title": "Приём заявлений на материальную помощь", "body": "Подайте демонстрационное заявление до " + due + ". В форме укажите основание обращения; реальные документы и персональные сведения не прикладывайте.", "category": "deadline", "dueDate": due, "action": "requests", "actionLabel": "Подать заявление", "requestType": "Заявление на материальную помощь"},
+			{"title": "Объявление деканата о справках", "body": "В учебном прототипе справку об обучении можно заказать онлайн. Откройте форму, отправьте заявку и пройдите два демонстрационных этапа обработки. Реальные справки не выдаются.", "category": "news", "action": "requests", "actionLabel": "Заказать справку", "requestType": "Справка об обучении"},
+		} {
+			n["createdAt"], n["read"] = stamp(), false
+			if _, err = tx.Exec("INSERT INTO records(user_id,kind,payload) VALUES(?,'notifications',?)", uid, encode(n)); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err = tx.Exec("INSERT INTO migrations(name) VALUES('demo-news-deadlines-v1')"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func validatePublicOrigin(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", errors.New("public-origin должен быть HTTPS origin без пути, параметров или логина")
+	}
+	return "https://" + u.Host, nil
 }
 func main() {
 	host := flag.String("host", "127.0.0.1", "Адрес локального сервера")
 	port := flag.Int("port", 8000, "Порт")
 	dbPath := flag.String("db", "data/razumist.sqlite3", "Путь к SQLite")
 	static := flag.String("static", "dist", "Каталог собранного React-интерфейса")
+	publicOrigin := flag.String("public-origin", "", "Явный HTTPS origin для доверенного обратного прокси; пусто для локального HTTP")
 	flag.Parse()
+	origin, err := validatePublicOrigin(*publicOrigin)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if e := os.MkdirAll(filepath.Dir(*dbPath), 0700); e != nil {
 		log.Fatal(e)
 	}
@@ -543,7 +659,7 @@ func main() {
 		abs = resolved
 	}
 	bindIP := net.ParseIP(*host)
-	a := &app{db: db, static: abs, attempts: map[string][]time.Time{}, loopbackOnly: *host == "localhost" || (bindIP != nil && bindIP.IsLoopback())}
+	a := &app{publicOrigin: origin, db: db, static: abs, attempts: map[string][]time.Time{}, loopbackOnly: *host == "localhost" || (bindIP != nil && bindIP.IsLoopback())}
 	if e = a.initialize(); e != nil {
 		log.Fatal(e)
 	}

@@ -1,0 +1,21 @@
+test_anonymous_and_wrong_password (test_api.APITest) ... ok
+test_client_cannot_assign_owner (test_api.APITest) ... ok
+test_csrf_and_cross_origin_rejected (test_api.APITest) ... ok
+test_dashboard_and_separate_academic_data (test_api.APITest) ... ok
+test_demo_request_lifecycle_and_notification (test_api.APITest) ... ok
+test_invalid_request_and_malformed_json (test_api.APITest) ... ok
+test_login_rate_limit (test_api.APITest) ... ok
+test_login_rotates_session (test_api.APITest) ... ok
+test_logout_invalidates_session (test_api.APITest) ... ok
+test_news_deadline_migration_preserves_read_state (test_api.APITest) ... ok
+test_notification_ownership_and_read (test_api.APITest) ... ok
+test_profiles_and_cookie (test_api.APITest) ... ok
+test_public_origin_secure_cookie_and_csrf (test_api.APITest) ... ok
+test_request_ownership_get_and_cancel (test_api.APITest) ... ok
+test_schedule_week_validation_and_normalization (test_api.APITest) ... ok
+test_z_persistence_after_restart (test_api.APITest) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 9.963s
+
+OK

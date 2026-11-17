@@ -1,0 +1,24 @@
+{
+  "results": [
+    {
+      "check": "rapid week navigation delayed responses",
+      "status": "passed",
+      "selected": "23 нояб. — 29 нояб.",
+      "firstHeading": "Понедельник, 23 Ноября",
+      "intercepted": 3
+    },
+    {
+      "check": "schedule500 hides stale rows and retries",
+      "status": "passed"
+    },
+    {
+      "check": "deadline opens prefilled material assistance form",
+      "status": "passed"
+    },
+    {
+      "check": "dialog tab cycle and Escape",
+      "status": "passed"
+    }
+  ],
+  "pageErrors": []
+}

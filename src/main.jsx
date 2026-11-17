@@ -46,6 +46,10 @@ const categoryIcons = {
   deadline: Clock,
   grades: ChartNoAxesCombined,
 };
+const lessonTone = (type) => ({
+  "Лекция": "lecture", "Практика": "practice", "Семинар": "seminar",
+  "Лабораторная": "lab", "Лабораторная работа": "lab",
+})[type] || "other";
 const requestSteps = [
   ["submitted", "Отправлена"],
   ["processing", "В работе"],
@@ -85,18 +89,18 @@ const statuses = {
   in_progress: "В процессе",
   attention: "Нужно внимание",
 };
-const dateKey = (date) => {
-  const d = new Date(date);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const timeZone = "Europe/Moscow";
+const dateKey = (date) => new Intl.DateTimeFormat("en-CA", {
+  timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+}).format(new Date(date));
+const calendarDate = (date, days = 0) => {
+  const d = new Date(date + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 };
+const weekStart = (date) => calendarDate(date, -((new Date(date + "T12:00:00Z").getUTCDay() + 6) % 7));
 const pretty = (v, opts = { day: "numeric", month: "long" }) =>
-  v
-    ? new Date(v.length === 10 ? v + "T12:00:00" : v).toLocaleDateString(
-        "ru-RU",
-        opts,
-      )
-    : "—";
-const today = dateKey(new Date());
+  v ? new Date(v.length === 10 ? v + "T12:00:00Z" : v).toLocaleDateString("ru-RU", { ...opts, timeZone }) : "—";
 const plural = (n, one, few, many) => n % 100 >= 11 && n % 100 <= 14 ? many : n % 10 === 1 ? one : n % 10 >= 2 && n % 10 <= 4 ? few : many;
 function Mark() {
   return (
@@ -136,6 +140,8 @@ const categoryName = (value) =>
     announcement: "Объявление",
   })[value] || value;
 function App() {
+  const [now, setNow] = useState(() => new Date());
+  const today = dateKey(now);
   const [user, setUser] = useState(null),
     [csrf, setCsrf] = useState(""),
     [boot, setBoot] = useState(true),
@@ -148,10 +154,23 @@ function App() {
     [modal, setModal] = useState(false),
     [detail, setDetail] = useState(null),
     [scheduleMode, setScheduleMode] = useState("week"),
-    [selectedDate, setSelectedDate] = useState(today);
-  async function api(path, method = "GET", body) {
+    [selectedDate, setSelectedDate] = useState(today),
+    [weekData, setWeekData] = useState(null),
+    [weekError, setWeekError] = useState(""),
+    [weekLoading, setWeekLoading] = useState(false),
+    [weekRetry, setWeekRetry] = useState(0),
+    [requestType, setRequestType] = useState(requestTypes[0]);
+  const selectedWeek = weekStart(selectedDate);
+  useEffect(() => {
+    const update = () => setNow(new Date());
+    const timer = setInterval(update, 30000);
+    window.addEventListener("focus", update);
+    return () => { clearInterval(timer); window.removeEventListener("focus", update); };
+  }, []);
+  async function api(path, method = "GET", body, signal) {
     const r = await fetch("/api" + path, {
       method,
+      signal,
       headers: {
         "Content-Type": "application/json",
         ...(csrf ? { "X-CSRF-Token": csrf } : {}),
@@ -198,7 +217,20 @@ function App() {
       setError("");
       refresh().catch((e) => setError(e.message));
     }
-  }, [user]);
+  }, [user, today]);
+  useEffect(() => {
+    if (!user || page !== "schedule") return;
+    const controller = new AbortController();
+    setWeekLoading(true);
+    setWeekError("");
+    api(`/schedule?week=${selectedWeek}`, "GET", undefined, controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) setWeekData({ ...result, owner: user.id });
+      })
+      .catch((e) => { if (!controller.signal.aborted) setWeekError(e.message); })
+      .finally(() => { if (!controller.signal.aborted) setWeekLoading(false); });
+    return () => controller.abort();
+  }, [user, page, selectedWeek, weekRetry, today]);
   useEffect(() => {
     if (!modal && !detail) return;
     const previous = document.activeElement;
@@ -271,6 +303,8 @@ function App() {
       setToast("");
       setUser(d.user);
       setPage("home");
+      setSelectedDate(today);
+      setWeekData(null);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -315,6 +349,7 @@ function App() {
   }
   async function cancelRequest(id) {
     setBusy(true);
+    setError("");
     try {
       const r = await api(`/requests/${id}/cancel`, "POST");
       setDetail(r.item);
@@ -326,11 +361,32 @@ function App() {
       setBusy(false);
     }
   }
+  async function advanceRequest(id) {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api(`/requests/${id}/demo-advance`, "POST");
+      setDetail(result.item);
+      await refresh();
+      setToast(result.item.status === "ready" ? "Демо-заявка готова. Уведомление добавлено во входящие." : "Демо-заявка принята в работу");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function readNotification(n) {
     try {
       await api(`/notifications/${n.id}/read`, "POST");
       await refresh();
-      if (n.action) go(n.action);
+      if (n.action && pages[n.action]) {
+        go(n.action);
+        if (n.action === "requests" && n.requestId) await openRequest(n.requestId);
+        else if (n.action === "requests" && requestTypes.includes(n.requestType)) {
+          setRequestType(n.requestType);
+          setModal(true);
+        } else if (n.action === "schedule") setSelectedDate(today);
+      }
     } catch (e) {
       setError(e.message);
     }
@@ -459,7 +515,7 @@ function App() {
     next = sortedSchedule.find(
       (s) =>
         s.date > today ||
-        (s.date === today && s.end > new Date().toTimeString().slice(0, 5)),
+        (s.date === today && s.end > now.toLocaleTimeString("ru-RU", { timeZone, hour: "2-digit", minute: "2-digit" })),
     );
   const average = grades.length
     ? Math.round(
@@ -522,13 +578,13 @@ function App() {
         onClick: () => openRequest(r.id),
       })),
     ...notifications
-      .filter((n) => !n.read && !["schedule", "requests"].includes(n.category))
+      .filter((n) => (!n.read || (n.dueDate && n.dueDate >= today)) && !["schedule", "requests"].includes(n.category))
       .map((n) => ({
         key: "n" + n.id,
         icon: categoryIcons[n.category] || Bell,
-        tone: "info",
+        tone: n.dueDate ? "warn" : "info",
         title: n.title,
-        meta: `${categoryName(n.category)} · ${pretty(n.createdAt)}`,
+        meta: n.dueDate ? `${n.dueDate < today ? "Срок истёк" : "До"} ${pretty(n.dueDate)} · ${n.actionLabel || "Открыть"}` : `${categoryName(n.category)} · ${pretty(n.createdAt)}`,
         onClick: () => readNotification(n),
       })),
   ];
@@ -541,19 +597,15 @@ function App() {
       .slice(0, 2)
       .map((x) => x[0])
       .join("");
-  const dayDates = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(selectedDate + "T12:00:00");
-    d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + i);
-    return dateKey(d);
-  });
+  const dayDates = Array.from({ length: 7 }, (_, i) => calendarDate(selectedWeek, i));
+  const visibleSchedule = weekData?.weekStart === selectedWeek && weekData?.owner === user.id
+    ? [...weekData.items].sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start)) : [];
   function shiftWeek(n) {
-    const d = new Date(selectedDate + "T12:00:00");
-    d.setDate(d.getDate() + n * 7);
-    setSelectedDate(dateKey(d));
+    setSelectedDate((date) => calendarDate(date, n * 7));
   }
   function scheduleRow(s) {
     return (
-      <div className={"class-row " + (s.changed ? "changed" : "")} key={s.id}>
+      <div className={"class-row lesson-" + lessonTone(s.type) + (s.changed ? " changed" : "")} key={s.id}>
         <div className="class-time">
           <strong>{s.start}</strong>
           <span>{s.end}</span>
@@ -641,13 +693,19 @@ function App() {
           })}
         </nav>
         <div className="sidebar-bottom">
-          <span className="avatar">{initials}</span>
-          <div>
-            <strong>{name}</strong>
-            <span>
-              {user.group} · {user.year} курс
+          <button
+            className="sidebar-profile"
+            aria-label={`Открыть личный кабинет: ${user.name}`}
+            aria-current={page === "profile" ? "page" : undefined}
+            onClick={() => go("profile")}
+          >
+            <span className="avatar">{initials}</span>
+            <span className="sidebar-profile-copy">
+              <strong>{name}</strong>
+              <span>{user.group} · {user.year} курс</span>
             </span>
-          </div>
+            <ChevronRight size={16} aria-hidden="true" />
+          </button>
           <button
             className="icon-button"
             aria-label="Выйти из аккаунта"
@@ -718,6 +776,7 @@ function App() {
                 className="primary"
                 onClick={() => {
                   setError("");
+                  setRequestType(requestTypes[0]);
                   setModal(true);
                 }}
               >
@@ -726,7 +785,7 @@ function App() {
               </button>
             )}
           </div>
-          {error && !modal && (
+          {error && !modal && !detail && (
             <div className="error" role="alert">
               <AlertCircle size={18} />
               {error}
@@ -773,11 +832,10 @@ function App() {
                           <h2>
                             {next ? next.subject : "На этой неделе пар больше нет"}
                           </h2>
-                          <p>
-                            {next
-                              ? `${next.room} · ${next.type} · ${next.teacher}`
-                              : "Расписание следующей недели — в разделе «Расписание»."}
-                          </p>
+                          {next ? <>
+                            <span className={"class-type next-type lesson-" + lessonTone(next.type)}>{next.type}</span>
+                            <p>{next.room} · {next.teacher}</p>
+                          </> : <p>Расписание следующей недели — в разделе «Расписание».</p>}
                         </div>
                       </div>
                       {next?.changed && (
@@ -877,6 +935,7 @@ function App() {
                           className="text-button"
                           onClick={() => {
                             setError("");
+                            setRequestType(requestTypes[0]);
                             setModal(true);
                           }}
                         >
@@ -998,7 +1057,7 @@ function App() {
                           <strong>{pretty(d, { day: "numeric" })}</strong>
                           <i
                             className={
-                              schedule.some((s) => s.date === d)
+                              visibleSchedule.some((s) => s.date === d)
                                 ? "has-classes"
                                 : ""
                             }
@@ -1006,10 +1065,15 @@ function App() {
                         </button>
                       ))}
                     </div>
+                    {weekLoading ? (
+                      <div className="loading" role="status"><LoaderCircle className="spin" size={20} /> Загружаем неделю…</div>
+                    ) : weekError ? (
+                      <div className="error" role="alert">{weekError}<button onClick={() => setWeekRetry((n) => n + 1)}>Повторить</button></div>
+                    ) : <>
                     {(scheduleMode === "day"
                       ? [selectedDate]
                       : dayDates.filter((d) =>
-                          schedule.some((s) => s.date === d),
+                          visibleSchedule.some((s) => s.date === d),
                         )
                     ).map((d) => (
                       <div className="schedule-day" key={d}>
@@ -1025,10 +1089,10 @@ function App() {
                             )}
                           </h2>
                         )}
-                        {sortedSchedule
+                        {visibleSchedule
                           .filter((s) => s.date === d)
                           .map(scheduleRow)}
-                        {!schedule.some((s) => s.date === d) && (
+                        {!visibleSchedule.some((s) => s.date === d) && (
                           <Empty
                             title="Свободный день"
                             body="На эту дату занятия не запланированы."
@@ -1037,16 +1101,17 @@ function App() {
                       </div>
                     ))}
                     {scheduleMode === "week" &&
-                      !schedule.some((s) => dayDates.includes(s.date)) && (
+                      !visibleSchedule.some((s) => dayDates.includes(s.date)) && (
                         <Empty
                           title="На этой неделе пока нет занятий"
                           body="Вернись к текущей неделе или проверь расписание позднее."
                         />
                       )}
+                    </>}
                   </section>
                   <p className="section-hint">
                     <AlertCircle size={15} />
-                    Изменённые занятия отмечены жёлтым. Все даты и преподаватели
+                    Время московское (МСК). Изменённые занятия отмечены жёлтым. Все даты и преподаватели
                     — демонстрационные.
                   </p>
                 </>
@@ -1119,13 +1184,13 @@ function App() {
                     <div>
                       <strong>Не согласен с баллами?</strong>
                       <p>
-                        Отправь обращение в деканат — ответ появится в разделе
-                        «Заявки».
+                        Создай демонстрационное обращение в деканат и проверь
+                        этапы обработки в разделе «Заявки».
                       </p>
                     </div>
                     <button
                       className="text-button"
-                      onClick={() => setModal(true)}
+                      onClick={() => { setError(""); setRequestType("Обращение в деканат"); setModal(true); }}
                     >
                       Написать
                       <ArrowRight size={16} />
@@ -1187,18 +1252,19 @@ function App() {
                       </span>
                       <div>
                         <div className="notification-meta">
-                          <span>{categoryName(n.category)}</span>
+                          <span className={"notification-category category-" + n.category}>{categoryName(n.category)}</span>
                           <time>{pretty(n.createdAt)}</time>
                           {!n.read && <Badge status="passed">Новое</Badge>}
                         </div>
                         <h3>{n.title}</h3>
                         <p>{n.body}</p>
+                        {n.dueDate && <p className="deadline-date"><Clock size={15} /> {n.dueDate < today ? "Срок истёк" : "Срок"}: <time dateTime={n.dueDate}>{pretty(n.dueDate)}</time></p>}
                         <button
                           className="text-button"
                           onClick={() => readNotification(n)}
                         >
                           {n.action
-                            ? "Открыть раздел"
+                            ? n.actionLabel || "Открыть раздел"
                             : n.read
                               ? "Прочитано"
                               : "Отметить прочитанным"}
@@ -1338,7 +1404,7 @@ function App() {
             <form onSubmit={createRequest}>
               <label>
                 Что тебе нужно?
-                <select name="type" required autoFocus>
+                <select name="type" required autoFocus defaultValue={requestType}>
                   {requestTypes.map((t) => (
                     <option key={t}>{t}</option>
                   ))}
@@ -1382,7 +1448,7 @@ function App() {
         <div
           className="modal-backdrop"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setDetail(null);
+            if (e.target === e.currentTarget && !busy) { setDetail(null); setError(""); }
           }}
         >
           <section
@@ -1396,7 +1462,8 @@ function App() {
               <button
                 className="icon-button"
                 aria-label="Закрыть заявку"
-                onClick={() => setDetail(null)}
+                disabled={busy}
+                onClick={() => { setDetail(null); setError(""); }}
               >
                 <X />
               </button>
@@ -1432,6 +1499,16 @@ function App() {
               <div className="info-note small">
                 Документ готов в демонстрационном сценарии. Реальная справка не
                 выдаётся.
+              </div>
+            )}
+            {["submitted", "processing"].includes(detail.status) && (
+              <div className="demo-processing">
+                <h3>Демонстрация обработки</h3>
+                <p>Покажи следующий этап вручную. Это имитация работы деканата; реальные документы не выдаются.</p>
+                <button className="primary" disabled={busy} onClick={() => advanceRequest(detail.id)}>
+                  {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />}
+                  {detail.status === "submitted" ? "Демо: принять в работу" : "Демо: завершить обработку"}
+                </button>
               </div>
             )}
             {["submitted", "processing"].includes(detail.status) && (
