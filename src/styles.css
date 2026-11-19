@@ -53,7 +53,7 @@
   --ink: #19263c;
   --ink-2: #495970;
   --ink-3: #607087;
-  --rule: #111111;
+  --rule: #8490a0;
   --hair: #e4e3dd;
   --accent: #2b3bff;
   --accent-soft: #eceeff;
@@ -1477,17 +1477,17 @@ textarea:focus {
   background: var(--mark);
 }
 .login-story h1 {
-  margin-top: auto;
+  margin-top: clamp(64px, 14vh, 140px);
   font-size: 64px;
-  line-height: 1;
+  line-height: 1.14;
   letter-spacing: -0.045em;
   max-width: 640px;
 }
 .login-story h1 em {
   font-style: normal;
-  background: var(--mark);
+  background: linear-gradient(transparent 18%, var(--mark) 18%, var(--mark) 90%, transparent 90%);
   color: var(--ink);
-  padding: 0 0.12em;
+  padding: 0 0.08em;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
@@ -1794,7 +1794,7 @@ textarea:focus {
     padding: 22px 16px 26px;
   }
   .login-story h1 {
-    margin-top: 40px;
+    margin-top: 28px;
     font-size: 38px;
   }
   .login-story > p {
