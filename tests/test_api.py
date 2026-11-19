@@ -6,6 +6,7 @@ import os
 import shutil
 from pathlib import Path
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -263,6 +264,29 @@ class APITest(unittest.TestCase):
         saved = self.alina.call('/api/requests/%s' % item['id'])[1]['item']
         self.assertEqual(saved['status'], 'ready')
         self.assertEqual(len(saved['history']), 3)
+
+    def test_patronymic_migration_preserves_existing_data(self):
+        item = self.create_request()
+        self.stop_server()
+        with sqlite3.connect(self.db) as db:
+            db.execute("UPDATE users SET profile=json_set(profile,'$.name','Алина Ветрова') WHERE login='alina'")
+            db.execute("UPDATE users SET profile=json_set(profile,'$.name','Марк Леснов') WHERE login='mark'")
+            db.execute("UPDATE records SET payload=json_set(payload,'$.teacher','Ирина Светлова') WHERE kind='grades'")
+            before = db.execute("SELECT id,user_id,kind,payload FROM records WHERE kind!='grades' ORDER BY id").fetchall()
+        for _ in range(2):
+            self.start_server()
+            self.alina.login()
+            self.mark.login('mark')
+            self.assertEqual(self.alina.call('/api/me')[1]['user']['name'], 'Алина Сергеевна Ветрова')
+            self.assertEqual(self.mark.call('/api/me')[1]['user']['name'], 'Марк Андреевич Леснов')
+            grades = self.alina.call('/api/grades')[1]['items']
+            self.assertTrue(all(g['teacher'] == 'Ирина Викторовна Светлова' for g in grades))
+            self.assertEqual(self.alina.call('/api/requests/%s' % item['id'])[0], 200)
+            self.assertEqual(self.mark.call('/api/requests/%s' % item['id'])[0], 404)
+            self.stop_server()
+            with sqlite3.connect(self.db) as db:
+                self.assertEqual(before, db.execute("SELECT id,user_id,kind,payload FROM records WHERE kind!='grades' ORDER BY id").fetchall())
+        self.start_server()
 
     def test_news_deadline_migration_preserves_read_state(self):
         items = self.alina.call('/api/notifications')[1]['items']

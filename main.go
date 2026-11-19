@@ -482,7 +482,7 @@ func subjects(uid int) []string {
 	return []string{"Типографика", "История дизайна", "Цвет и композиция", "Дизайн цифровых продуктов"}
 }
 
-var teachers = []string{"Ирина Светлова", "Павел Речной", "Вера Облачная", "Артём Полянов"}
+var teachers = []string{"Ирина Викторовна Светлова", "Павел Александрович Речной", "Вера Николаевна Облачная", "Артём Дмитриевич Полянов"}
 
 var moscow = time.FixedZone("MSK", 3*3600)
 
@@ -533,9 +533,9 @@ func (a *app) initialize() error {
 		return a.migrateDemoContent()
 	}
 	for uid := 1; uid <= 2; uid++ {
-		login, name, group, program, faculty, year := "alina", "Алина Ветрова", "ИС-23-1", "Информационные системы и технологии", "Цифровых технологий", 3
+		login, name, group, program, faculty, year := "alina", "Алина Сергеевна Ветрова", "ИС-23-1", "Информационные системы и технологии", "Цифровых технологий", 3
 		if uid == 2 {
-			login, name, group, program, faculty, year = "mark", "Марк Леснов", "ДЗ-24-2", "Дизайн цифровой среды", "Дизайна и коммуникаций", 2
+			login, name, group, program, faculty, year = "mark", "Марк Андреевич Леснов", "ДЗ-24-2", "Дизайн цифровой среды", "Дизайна и коммуникаций", 2
 		}
 		salt := token()
 		profile := object{"id": uid, "name": name, "faculty": faculty, "program": program, "year": year, "group": group, "email": login + "@student.example", "studentNumber": fmt.Sprintf("ДЕМО-2026-00%d", uid)}
@@ -594,6 +594,22 @@ func (a *app) migrateDemoContent() error {
 	defer tx.Rollback()
 	if _, err = tx.Exec("CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY)"); err != nil {
 		return err
+	}
+	// Upgrade only known demo names; preserve all other profile and record fields.
+	for _, person := range [][2]string{
+		{"Алина Ветрова", "Алина Сергеевна Ветрова"},
+		{"Марк Леснов", "Марк Андреевич Леснов"},
+		{"Ирина Светлова", "Ирина Викторовна Светлова"},
+		{"Павел Речной", "Павел Александрович Речной"},
+		{"Вера Облачная", "Вера Николаевна Облачная"},
+		{"Артём Полянов", "Артём Дмитриевич Полянов"},
+	} {
+		if _, err = tx.Exec(`UPDATE users SET profile=json_set(profile,'$.name',?) WHERE json_extract(profile,'$.name')=?`, person[1], person[0]); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(`UPDATE records SET payload=json_set(payload,'$.teacher',?) WHERE kind='grades' AND json_extract(payload,'$.teacher')=?`, person[1], person[0]); err != nil {
+			return err
+		}
 	}
 	var count int
 	if err = tx.QueryRow("SELECT COUNT(*) FROM migrations WHERE name='demo-news-deadlines-v1'").Scan(&count); err != nil {

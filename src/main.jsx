@@ -594,7 +594,7 @@ function App() {
   const name = user.name.split(" ")[0],
     initials = user.name
       .split(" ")
-      .slice(0, 2)
+      .filter((_, i, parts) => i === 0 || i === parts.length - 1)
       .map((x) => x[0])
       .join("");
   const dayDates = Array.from({ length: 7 }, (_, i) => calendarDate(selectedWeek, i));
