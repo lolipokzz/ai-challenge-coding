@@ -1,0 +1,80 @@
+{
+  "checked_date_msk": "2026-11-20",
+  "sha": "e70fe0bc4e4f27430c4e9ab9727653857f7c1720",
+  "run_url": "https://github.com/lolipokzz/ai-challenge-coding/actions/runs/44639339457",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "verify-and-deploy",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install locked frontend dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Test backend and validate deployment scripts",
+          "conclusion": "success"
+        },
+        {
+          "name": "Build Linux release",
+          "conclusion": "success"
+        },
+        {
+          "name": "Deploy verified main revision",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "login": "alina",
+      "name": "Алина Сергеевна Ветрова",
+      "profile_fields": true,
+      "teacher_patronymics": true,
+      "secure_cookie": true
+    },
+    {
+      "login": "mark",
+      "name": "Марк Андреевич Леснов",
+      "profile_fields": true,
+      "teacher_patronymics": true,
+      "secure_cookie": true
+    }
+  ],
+  "tls_not_after": "Nov 24 13:13:30 2026 GMT",
+  "tls_verified": true
+}
