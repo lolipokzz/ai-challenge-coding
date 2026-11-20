@@ -1944,3 +1944,19 @@ textarea:focus {
 @media (max-width: 860px) {
   .class-row { padding: 14px 10px; gap: 12px; }
 }
+
+/* Выбор преподавателя и его расписание */
+.schedule-person { padding-bottom: 22px; }
+.schedule-person label { display: block; font-weight: 600; margin-bottom: 8px; }
+.schedule-person select { width: 100%; max-width: 620px; min-width: 0; }
+.schedule-person p { margin-top: 10px; color: var(--ink-2); font-size: 14px; }
+.class-meta .teacher-link { display: inline-flex; align-items: flex-start; gap: 6px; text-align: left; color: var(--ink-2); background: transparent; padding: 4px 0; max-width: 100%; }
+.class-meta .teacher-link > span { display: block; font-family: var(--sans); color: inherit; overflow-wrap: anywhere; }
+.teacher-link svg { flex-shrink: 0; margin-top: 3px; }
+.teacher-link small { display: block; font-size: 12px; margin-top: 2px; }
+.teacher-link:hover { text-decoration: underline; }
+.teacher-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.schedule-group { color: var(--ink-2); }
+
+.schedule-scope { display: flex; width: fit-content; max-width: 100%; margin-bottom: 18px; }
+.schedule-scope button { white-space: normal; }

@@ -221,7 +221,50 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		respond(w, 200, object{"items": scheduleWeek(s.uid, week), "weekStart": weekMonday(week).Format("2006-01-02"), "timeZone": "Europe/Moscow"})
+		teacherID := r.URL.Query().Get("teacher")
+		groupID := r.URL.Query().Get("group")
+		if teacherID != "" && groupID != "" {
+			fail(w, 400, "Выберите группу или преподавателя")
+			return
+		}
+		groupUID := s.uid
+		if groupID != "" {
+			switch groupID {
+			case "ИС-23-1":
+				groupUID = 1
+			case "ДЗ-24-2":
+				groupUID = 2
+			default:
+				fail(w, 404, "Группа не найдена")
+				return
+			}
+		}
+		items := scheduleWeek(groupUID, week)
+		if teacherID == "" {
+			groupID = items[0]["group"].(string)
+		}
+		if teacherID != "" {
+			found := false
+			for _, teacher := range teacherDirectory() {
+				if teacher["id"] == teacherID {
+					found = true
+				}
+			}
+			if !found {
+				fail(w, 404, "Преподаватель не найден")
+				return
+			}
+			// Shared demo teaching timetable contains no private student records.
+			items = []object{}
+			for _, uid := range []int{1, 2} {
+				for _, item := range scheduleWeek(uid, week) {
+					if item["teacherId"] == teacherID {
+						items = append(items, item)
+					}
+				}
+			}
+		}
+		respond(w, 200, object{"items": items, "teachers": teacherDirectory(), "groups": []string{"ИС-23-1", "ДЗ-24-2"}, "groupId": groupID, "teacherId": teacherID, "weekStart": weekMonday(week).Format("2006-01-02"), "timeZone": "Europe/Moscow"})
 	case path == "/api/dashboard" && r.Method == "GET":
 		now := time.Now().In(moscow)
 		out := object{"schedule": append(scheduleWeek(s.uid, now), scheduleWeek(s.uid, now.AddDate(0, 0, 7))...), "timeZone": "Europe/Moscow"}
@@ -484,6 +527,16 @@ func subjects(uid int) []string {
 
 var teachers = []string{"Ирина Викторовна Светлова", "Павел Александрович Речной", "Вера Николаевна Облачная", "Артём Дмитриевич Полянов"}
 
+var teacherPositions = []string{"Доцент", "Старший преподаватель", "Профессор", "Ассистент"}
+
+func teacherDirectory() []object {
+	out := []object{}
+	for i, name := range teachers {
+		out = append(out, object{"id": fmt.Sprintf("teacher-%d", i+1), "name": name, "position": teacherPositions[i]})
+	}
+	return out
+}
+
 var moscow = time.FixedZone("MSK", 3*3600)
 
 func weekMonday(date time.Time) time.Time {
@@ -495,8 +548,14 @@ func scheduleWeek(uid int, date time.Time) []object {
 	monday := weekMonday(date)
 	out := []object{}
 	s := subjects(uid)
+	group := "ИС-23-1"
+	times := [][2]string{{"09:00", "10:30"}, {"10:45", "12:15"}, {"13:00", "14:30"}}
+	if uid == 2 {
+		group = "ДЗ-24-2"
+		times = [][2]string{{"15:00", "16:30"}, {"16:45", "18:15"}, {"18:30", "20:00"}}
+	}
 	for d := 0; d < 5; d++ {
-		for slot, t := range [][2]string{{"09:00", "10:30"}, {"10:45", "12:15"}, {"13:00", "14:30"}} {
+		for slot, t := range times {
 			i := (d + slot) % 4
 			changed := i == 1 && slot == 1
 			room := fmt.Sprintf("А-%d", 201+i)
@@ -511,7 +570,7 @@ func scheduleWeek(uid int, date time.Time) []object {
 				}
 				note = "Аудитория изменена: " + room
 			}
-			out = append(out, object{"id": fmt.Sprintf("%d-%s-%d", uid, monday.Format("2006-01-02"), d*3+slot), "date": monday.AddDate(0, 0, d).Format("2006-01-02"), "start": t[0], "end": t[1], "subject": s[i], "type": []string{"Лекция", "Практика", "Семинар"}[slot], "room": room, "teacher": teachers[i], "changed": changed, "changeNote": note})
+			out = append(out, object{"id": fmt.Sprintf("%d-%s-%d", uid, monday.Format("2006-01-02"), d*3+slot), "date": monday.AddDate(0, 0, d).Format("2006-01-02"), "start": t[0], "end": t[1], "subject": s[i], "type": []string{"Лекция", "Практика", "Семинар"}[slot], "room": room, "teacher": teachers[i], "teacherId": fmt.Sprintf("teacher-%d", i+1), "teacherPosition": teacherPositions[i], "group": group, "changed": changed, "changeNote": note})
 		}
 	}
 	return out

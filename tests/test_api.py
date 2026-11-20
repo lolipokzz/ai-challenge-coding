@@ -239,6 +239,42 @@ class APITest(unittest.TestCase):
         dates = sorted(set(x['date'] for x in dashboard['schedule']))
         self.assertEqual((datetime.date.fromisoformat(dates[-1]) - datetime.date.fromisoformat(dates[0])).days, 11)
 
+    def test_group_schedule_selection_and_validation(self):
+        query = '/api/schedule?week=2026-11-18'
+        mine = self.mark.call(query)[1]
+        other = self.alina.call(query + '&group=' + urllib.parse.quote('ДЗ-24-2'))[1]
+        self.assertEqual(mine, other)
+        self.assertEqual(other['groupId'], 'ДЗ-24-2')
+        self.assertEqual(set(other['groups']), {'ИС-23-1', 'ДЗ-24-2'})
+        self.assertTrue(all(x['group'] == 'ДЗ-24-2' for x in other['items']))
+        self.assertEqual(self.alina.call(query + '&group=unknown')[0], 404)
+        self.assertEqual(self.alina.call(query + '&group=unknown&teacher=teacher-1')[0], 400)
+        self.assertEqual(Client(self.base).call(query + '&group=' + urllib.parse.quote('ИС-23-1'))[0], 401)
+
+    def test_teacher_schedule_matches_groups_without_conflicts(self):
+        query = '/api/schedule?week=2026-11-18'
+        first = self.alina.call(query)[1]
+        second = self.mark.call(query)[1]
+        self.assertEqual(len(first['teachers']), 4)
+        self.assertEqual(first['teacherId'], '')
+        for teacher in first['teachers']:
+            status, data, _ = self.alina.call(query + '&teacher=' + teacher['id'])
+            self.assertEqual(status, 200)
+            expected = [x for x in first['items'] + second['items'] if x['teacherId'] == teacher['id']]
+            self.assertEqual(data['items'], expected)
+            self.assertEqual(data['weekStart'], '2026-11-16')
+            self.assertEqual({x['group'] for x in data['items']}, {'ИС-23-1', 'ДЗ-24-2'})
+            self.assertTrue(all(x['teacherPosition'] == teacher['position'] for x in data['items']))
+            self.assertEqual(data, self.mark.call(query + '&teacher=' + teacher['id'])[1])
+            self.assertFalse(any('profile' in x or 'email' in x or 'score' in x for x in data['items']))
+            ordered = sorted(data['items'], key=lambda x: (x['date'], x['start']))
+            for a, b in zip(ordered, ordered[1:]):
+                if a['date'] == b['date']:
+                    self.assertLessEqual(a['end'], b['start'])
+        self.assertEqual(Client(self.base).call(query + '&teacher=teacher-1')[0], 401)
+        self.assertEqual(self.alina.call(query + '&teacher=unknown')[0], 404)
+        self.assertEqual(self.alina.call('/api/schedule?week=invalid&teacher=teacher-1')[0], 400)
+
     def test_demo_request_lifecycle_and_notification(self):
         item = self.create_request()
         path = '/api/requests/%s/demo-advance' % item['id']

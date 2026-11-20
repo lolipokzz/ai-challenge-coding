@@ -156,11 +156,16 @@ function App() {
     [scheduleMode, setScheduleMode] = useState("week"),
     [selectedDate, setSelectedDate] = useState(today),
     [weekData, setWeekData] = useState(null),
+    [selectedTeacher, setSelectedTeacher] = useState("teacher-1"),
+    [scheduleScope, setScheduleScope] = useState("group"),
+    [selectedGroup, setSelectedGroup] = useState(""),
     [weekError, setWeekError] = useState(""),
     [weekLoading, setWeekLoading] = useState(false),
     [weekRetry, setWeekRetry] = useState(0),
     [requestType, setRequestType] = useState(requestTypes[0]);
   const selectedWeek = weekStart(selectedDate);
+  const activeGroup = selectedGroup || user?.group || "";
+  const scheduleFilter = scheduleScope === "teacher" ? `teacher=${encodeURIComponent(selectedTeacher)}` : `group=${encodeURIComponent(activeGroup)}`;
   useEffect(() => {
     const update = () => setNow(new Date());
     const timer = setInterval(update, 30000);
@@ -223,14 +228,14 @@ function App() {
     const controller = new AbortController();
     setWeekLoading(true);
     setWeekError("");
-    api(`/schedule?week=${selectedWeek}`, "GET", undefined, controller.signal)
+    api(`/schedule?week=${selectedWeek}&${scheduleFilter}`, "GET", undefined, controller.signal)
       .then((result) => {
         if (!controller.signal.aborted) setWeekData({ ...result, owner: user.id });
       })
       .catch((e) => { if (!controller.signal.aborted) setWeekError(e.message); })
       .finally(() => { if (!controller.signal.aborted) setWeekLoading(false); });
     return () => controller.abort();
-  }, [user, page, selectedWeek, weekRetry, today]);
+  }, [user, page, selectedWeek, scheduleFilter, weekRetry, today]);
   useEffect(() => {
     if (!modal && !detail) return;
     const previous = document.activeElement;
@@ -598,7 +603,7 @@ function App() {
       .map((x) => x[0])
       .join("");
   const dayDates = Array.from({ length: 7 }, (_, i) => calendarDate(selectedWeek, i));
-  const visibleSchedule = weekData?.weekStart === selectedWeek && weekData?.owner === user.id
+  const visibleSchedule = weekData?.weekStart === selectedWeek && weekData?.owner === user.id && (scheduleScope === "teacher" ? weekData?.teacherId === selectedTeacher : !weekData?.teacherId && weekData?.groupId === activeGroup)
     ? [...weekData.items].sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start)) : [];
   function shiftWeek(n) {
     setSelectedDate((date) => calendarDate(date, n * 7));
@@ -618,10 +623,17 @@ function App() {
               <MapPin size={14} />
               {s.room}
             </span>
-            <span>
+            <button className="teacher-link" onClick={() => {
+              setScheduleScope("teacher");
+              setSelectedTeacher(s.teacherId);
+              setSelectedDate(s.date);
+              setScheduleMode("week");
+              go("schedule");
+            }} aria-label={`Расписание преподавателя ${s.teacher}`}>
               <User size={14} />
-              {s.teacher}
-            </span>
+              <span>{s.teacher}<small>{s.teacherPosition}</small></span>
+            </button>
+            {page === "schedule" && scheduleScope === "teacher" && <span className="schedule-group">Группа {s.group}</span>}
           </div>
           {s.changed && (
             <div className="change-note">
@@ -834,7 +846,7 @@ function App() {
                           </h2>
                           {next ? <>
                             <span className={"class-type next-type lesson-" + lessonTone(next.type)}>{next.type}</span>
-                            <p>{next.room} · {next.teacher}</p>
+                            <p>{next.room} · {next.teacher} · {next.teacherPosition}</p>
                           </> : <p>Расписание следующей недели — в разделе «Расписание».</p>}
                         </div>
                       </div>
@@ -984,6 +996,23 @@ function App() {
               {page === "schedule" && (
                 <>
                   <section className="panel schedule-panel">
+                    <div className="schedule-person">
+                      <div className="segmented schedule-scope" role="group" aria-label="Тип расписания">
+                        <button className={scheduleScope === "group" ? "selected" : ""} aria-pressed={scheduleScope === "group"} onClick={() => setScheduleScope("group")}>По группам</button>
+                        <button className={scheduleScope === "teacher" ? "selected" : ""} aria-pressed={scheduleScope === "teacher"} onClick={() => setScheduleScope("teacher")}>По преподавателям</button>
+                      </div>
+                      <label htmlFor="schedule-person">{scheduleScope === "group" ? "Группа" : "Преподаватель"}</label>
+                      {scheduleScope === "group" ? (
+                        <select id="schedule-person" value={activeGroup} onChange={(event) => setSelectedGroup(event.target.value)}>
+                          {(weekData?.groups || [user.group]).map((group) => <option key={group} value={group}>{group}{group === user.group ? " · Моя группа" : ""}</option>)}
+                        </select>
+                      ) : (
+                        <select id="schedule-person" value={selectedTeacher} onChange={(event) => setSelectedTeacher(event.target.value)}>
+                          {(weekData?.teachers || []).map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name} · {teacher.position}</option>)}
+                        </select>
+                      )}
+                      <p>{scheduleScope === "teacher" ? "Занятия преподавателя во всех демонстрационных группах." : "Учебное расписание выбранной группы."} Время московское.</p>
+                    </div>
                     <div className="schedule-controls">
                       <div className="week-controls">
                         <button
